@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netra"
+version = "0.1.0"
+description = "Offline vision assistant prototype for Windows Snapdragon PCs"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "numpy>=1.24,<2.0",
+    "opencv-python>=4.9,<5",
+    "onnxruntime>=1.18,<2",
+    "pytesseract>=0.3.10,<0.4",
+    "pyttsx3>=2.90",
+    "sounddevice>=0.4.6",
+]
+
+[project.optional-dependencies]
+export = ["qai-hub-models"]
+demo = ["ultralytics>=8.3,<9"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

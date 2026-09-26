@@ -1,0 +1,120 @@
+Metadata-Version: 2.4
+Name: netra
+Version: 0.1.0
+Summary: Offline vision assistant prototype for Windows Snapdragon PCs
+Requires-Python: <3.14,>=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy<2.0,>=1.24
+Requires-Dist: opencv-python<5,>=4.9
+Requires-Dist: onnxruntime<2,>=1.18
+Requires-Dist: pyttsx3>=2.90
+Requires-Dist: sounddevice>=0.4.6
+Provides-Extra: export
+Requires-Dist: qai-hub-models; extra == "export"
+Provides-Extra: demo
+Requires-Dist: ultralytics<9,>=8.3; extra == "demo"
+
+# Netra
+
+Netra is an offline-first Windows vision assistant prototype for blind and low-vision users on Snapdragon PCs. Runtime inference is intended to stay on-device; AI Hub access is only needed during model export or asset download. Phase 2 implements low-rate webcam capture, local YOLOv8 ONNX detection, proximity-size alerts, console alert output, and an optional debug preview. VLM and voice features are still pending.
+
+## Prerequisites
+
+- Windows 11 and 64-bit Python 3.10. This project pins Python 3.10 for the requested qai_hub_models compatibility.
+- A Qualcomm AI Hub account and an API token for Workbench model compilation.
+- A camera and microphone for the later end-to-end demo.
+- A supported Snapdragon PC for on-device NPU inference.
+
+**Windows architecture note:** Qualcomm's AI Hub Models installation instructions currently state that Snapdragon X-series Windows users need AMD64/x64 Python; Windows ARM64 Python is not supported by that package. Use x64 Python for export/setup. GenieX is a separate native Windows ARM64 runtime for the Qwen VLM. Confirm the exact export/runtime support for your hardware and SDK before relying on a generated artifact.
+
+## Setup
+
+Open PowerShell in this directory. Set the token in the current shell; do not put it in source control or a script:
+
+```powershell
+$env:QAI_HUB_TOKEN = "<your AI Hub API token>"
+.\scripts\setup.ps1
+```
+
+The script creates `.venv310`, installs the package dependencies and `qai-hub-models`, and configures the AI Hub CLI from `QAI_HUB_TOKEN`. If no token is set, local dependencies are still installed, but exporting requires the token. AI Hub Workbench access is needed for compilation; setup/export may use the internet. The intended runtime does not make cloud calls.
+
+Get a token by creating/signing into a Qualcomm account, opening [AI Hub Workbench](https://workbench.aihub.qualcomm.com/), and going to **Account -> Settings -> API Token**. The setup script passes the environment value to `qai-hub configure`; the CLI stores its credentials in the user's local configuration.
+
+## Model Assets
+
+The model assets are deliberately not committed. Export/download them during setup on a development machine, then transfer the resulting files to the target PC as required by the runtime. Use a device name supported by AI Hub; `Snapdragon X Elite CRD` is the script default and can be changed with `-Device`.
+
+Run the model steps individually:
+
+```powershell
+$env:QAI_HUB_TOKEN = "<your AI Hub API token>"
+.\scripts\setup.ps1 -ExportModels -Device "Snapdragon X Elite CRD"
+```
+
+The script runs these documented Qualcomm commands:
+
+```powershell
+qai-hub-models install yolov8_det
+qai-hub-models export yolov8_det --runtime onnx --precision w8a8 --device "Snapdragon X Elite CRD"
+
+qai-hub-models install whisper_tiny
+qai-hub-models export whisper_tiny --runtime qnn_context_binary --precision float --device "Snapdragon X Elite CRD"
+
+qai-hub-models fetch Qwen3-VL-2B-Instruct --runtime geniex_llamacpp --precision q4_0
+```
+
+There is no honest single INT8 export command for all three requested models in the currently documented Qualcomm flows:
+
+- YOLOv8 supports the `w8a8` (weight- and activation-quantized) ONNX export shown above for use with a QNN-enabled ONNX Runtime provider.
+- Whisper Tiny's documented QNN context-binary asset is `float`; its model page reports NPU execution, but does not establish an INT8 export for that artifact.
+- Qwen3-VL-2B-Instruct is delivered as a `q4_0` GGUF for GenieX/llama.cpp, not as an INT8 `qai_hub_models export` artifact. GenieX must be installed separately using the [GenieX Windows ARM64 guide](https://geniex.aihub.qualcomm.com/en/run/cli/install/). The model asset must be present locally before use to keep inference offline.
+
+## Benchmarking and Runtime Environments
+
+Record each model's actual format in benchmark notes; do not describe all three as INT8:
+
+- YOLOv8 detector: `w8a8` (8-bit weights and activations), exported as ONNX for QNN-provider use with a CPU fallback.
+- Whisper Tiny: `float` QNN artifact in the currently documented export flow; no INT8 artifact is assumed here.
+- Qwen3-VL-2B-Instruct: `q4_0` GGUF through GenieX/llama.cpp, not an INT8 qai_hub_models export.
+
+The workflow spans two environments. Use 64-bit x64 Python 3.10 with `qai_hub_models` on a development/export machine for AI Hub Workbench export and quantization. Deploy the model assets to the Snapdragon device and use its native ARM64 runtimes for local inference: a QNN-enabled ONNX Runtime for YOLO NPU execution (or CPU fallback), and GenieX on Windows ARM64 for Qwen3-VL. The AI Hub token and internet are for export/download only; the running app does not use them. Confirm the device's supported ONNX Runtime/QNN build and artifact compatibility before benchmarking NPU latency.
+
+Check `qai-hub-models export --help`, each model's current documentation, and your AI Hub device/runtime catalog if Qualcomm changes supported options. The CLI's export/compile operations contact AI Hub Workbench. Do not run those operations from the always-on application loop.
+
+## Project Layout
+
+```text
+src/netra/
+  app.py              Event loop and component orchestration
+  camera.py           Camera capture and frame buffering
+  detection.py        Fast object and obstacle detection
+  speech_to_text.py   Local voice command recognition
+  text_to_speech.py   Speech output
+  vlm.py              On-demand scene description
+scripts/
+  setup.ps1           Python setup, token configuration, model export/download
+models/               Local model assets (not committed)
+```
+
+## Running
+
+Set the exported ONNX model path, then run the app from the Python 3.10 environment:
+
+```powershell
+$env:NETRA_DETECTOR_MODEL = "C:\path\to\yolov8_det.onnx"
+$env:NETRA_COMPUTE_UNIT = "cpu"
+.\.venv310\Scripts\python.exe -m netra --debug --fps 3
+```
+
+Use `NETRA_COMPUTE_UNIT=auto` (default) or `npu` to try `QNNExecutionProvider`; if it is unavailable or fails to initialize, Netra logs a warning and uses `CPUExecutionProvider`. Set `NETRA_COMPUTE_UNIT=cpu` for local testing. The standard `onnxruntime` dependency is the CPU fallback; NPU acceleration requires a device-compatible ONNX Runtime build with QNN Execution Provider and its Qualcomm runtime libraries. `--debug` opens a preview with boxes. Press Q or Escape in that window, or Ctrl+C in the console, to stop. Alerts print from a separate queue-consumer thread.
+
+Other configuration variables: `NETRA_CAMERA_FPS` (default `3`), `NETRA_CONFIDENCE_THRESHOLD` (default `0.35`), `NETRA_PROXIMITY_THRESHOLD` (default `0.12` of frame area), and `NETRA_ALERT_COOLDOWN_S` (default `3`). Box area is only a rough visual-size heuristic, not a physical distance estimate.
+
+## Privacy and Known Limitations
+
+- Setup, model downloads, and Workbench exports need internet access. Runtime inference uses local model files only and does not call AI Hub.
+- Model compilation on AI Hub is a development-time cloud operation, not local NPU inference. CPU fallback and actual execution-provider selection must be verified at runtime on the target device.
+- Detection boxes alone do not establish distance, drop-offs, or collision risk. The prototype is not a mobility aid or a substitute for a cane, guide dog, or human assistance; never rely on it for safety-critical navigation.
+- VLM descriptions and OCR/voice recognition can be incorrect, delayed, or incomplete. Keep spoken alerts short and avoid presenting guesses as certainty.
+- YOLOv8 is distributed under AGPL-3.0; review its license for your intended submission. Review the Qwen model's usage terms and limitations before deployment.
+- Camera and microphone access must be granted by Windows. No model binaries or captured media are included in this repository.

@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+src/netra/__init__.py
+src/netra/__main__.py
+src/netra/app.py
+src/netra/camera.py
+src/netra/detection.py
+src/netra/speech_to_text.py
+src/netra/text_to_speech.py
+src/netra/vlm.py
+src/netra.egg-info/PKG-INFO
+src/netra.egg-info/SOURCES.txt
+src/netra.egg-info/dependency_links.txt
+src/netra.egg-info/requires.txt
+src/netra.egg-info/top_level.txt
+tests/test_detection_pipeline.py

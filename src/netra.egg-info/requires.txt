@@ -1,0 +1,11 @@
+numpy<2.0,>=1.24
+opencv-python<5,>=4.9
+onnxruntime<2,>=1.18
+pyttsx3>=2.90
+sounddevice>=0.4.6
+
+[demo]
+ultralytics<9,>=8.3
+
+[export]
+qai-hub-models
