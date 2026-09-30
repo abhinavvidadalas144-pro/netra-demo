@@ -15,7 +15,7 @@ from .camera import CameraCapture
 from .detection import Detection, ObjectDetector, alerts_for_proximity
 from .feature_actions import FeatureActionWorker
 from .text_to_speech import SpeechOutput
-from .vlm import MockSceneDescriber
+from .vlm import SceneDescriptionWorker
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ def handle_preview_key(
 	key: int,
 	image,
 	detections: Sequence[Detection],
-	scene_describer: MockSceneDescriber,
+	scene_worker: SceneDescriptionWorker,
 	feature_actions: FeatureActionWorker,
 	speech_queue: queue.Queue[str],
 	last_action_at: dict[str, float],	action_cooldown: float = 0.6,
@@ -117,15 +117,9 @@ def handle_preview_key(
 	last_action_at[action] = now
 
 	if action == "scene":
-		logger.info("Calling mock scene describer for the current preview frame.")
-		try:
-			message = scene_describer.describe(image, detections)
-			speech_queue.put_nowait(message)
-			logger.info("Scene description queued for TTS: %s", message)
-		except queue.Full:
-			logger.warning("Speech queue is full; dropping the scene description.")
-		except Exception:
-			logger.exception("Scene description action failed.")
+		logger.info("Queueing real Moondream2 inference for the current camera frame.")
+		queued = scene_worker.submit(image)
+		logger.info("Moondream2 request %s queued.", "was" if queued else "was not")
 	else:
 		queued = feature_actions.submit(action, image)
 		logger.info("%s action request %s queued.", key_name, "was" if queued else "was not")
@@ -138,12 +132,13 @@ def run(
 	debug: bool = False,
 	model_path: Optional[str] = None,
 	compute_unit: Optional[str] = None,
+	vlm_question: Optional[str] = None,
 ) -> None:
 	detector = ObjectDetector(model_path=model_path, compute_unit=compute_unit)
 	alert_queue: queue.Queue[str] = queue.Queue(maxsize=16)
 	speech_output = SpeechOutput(alert_queue)
 	feature_actions = FeatureActionWorker(alert_queue)
-	scene_describer = MockSceneDescriber()
+	scene_worker = SceneDescriptionWorker(alert_queue, question=vlm_question)
 	camera = CameraCapture(device_index=camera_index, fps=fps)
 	cooldown = max(0.0, float(os.getenv("NETRA_ALERT_COOLDOWN_S", "3.0")))
 	last_alert_at: dict[str, float] = {}
@@ -151,11 +146,12 @@ def run(
 
 	speech_output.start()
 	feature_actions.start()
+	scene_worker.start()
 	camera.start()
 	logger.info(
 		"Netra CPU detection loop started at %.1f FPS. Press Ctrl+C to stop%s.",
 		fps,
-		"; Space scene, R read, C currency, Q/Esc quit" if debug else "",
+		"; Space runs real Moondream2, R read, C currency, Q/Esc quit" if debug else "",
 	)
 	if debug:
 		print("Click the camera window before pressing hotkeys.", flush=True)
@@ -169,6 +165,7 @@ def run(
 			detections = detector.detect(frame.image)
 			messages = alerts_for_proximity(detections, detector.proximity_threshold)
 			enqueue_alerts(messages, alert_queue, last_alert_at, cooldown)
+			scene_worker.announce_thinking_if_slow()
 
 			if debug:
 				cv2.imshow("Netra camera / detections", draw_detections(frame.image, detections))
@@ -177,7 +174,7 @@ def run(
 					key,
 					frame.image,
 					detections,
-					scene_describer,
+					scene_worker,
 					feature_actions,
 					alert_queue,
 					last_action_at,
@@ -187,6 +184,7 @@ def run(
 		logger.info("Stopping Netra.")
 	finally:
 		camera.stop()
+		scene_worker.stop()
 		feature_actions.stop()
 		speech_output.stop()
 		if debug:
@@ -204,6 +202,11 @@ def main() -> None:
 	)
 	parser.add_argument("--debug", action="store_true", help="Show the camera preview with detection boxes")
 	parser.add_argument("--model", default=None, help="Path to the exported YOLOv8 ONNX model")
+	parser.add_argument(
+		"--question",
+		default=os.getenv("NETRA_VLM_QUESTION"),
+		help="Ask Moondream this question about each captured frame on Space (default: describe the image)",
+	)
 	parser.add_argument(
 		"--compute-unit",
 		choices=("auto", "npu", "cpu"),
@@ -223,6 +226,7 @@ def main() -> None:
 			debug=arguments.debug,
 			model_path=arguments.model,
 			compute_unit=arguments.compute_unit,
+			vlm_question=arguments.question,
 		)
 	except (FileNotFoundError, RuntimeError, ValueError) as error:
 		logger.error("%s", error)

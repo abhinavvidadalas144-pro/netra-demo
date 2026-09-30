@@ -11,11 +11,11 @@ import numpy as np
 
 from netra.app import enqueue_alerts, handle_preview_key
 from netra.camera import CameraCapture
-from netra.detection import ObjectDetector, alerts_for_proximity, decode_yolo_outputs
+from netra.detection import ObjectDetector, alerts_for_proximity, decode_yolo_outputs, letterbox
 from netra.feature_actions import FeatureActionWorker
 from netra.text_to_speech import SpeechOutput
 from netra.text_reading import extract_text
-from netra.vlm import MockSceneDescriber
+from netra.vlm import MoondreamSceneDescriber, SceneDescriptionWorker
 
 
 class FakeCapture:
@@ -133,6 +133,27 @@ class DetectionPipelineTests(unittest.TestCase):
 
         self.assertEqual(detections, [])
 
+    def test_decoder_default_confidence_cutoff_is_point_five(self):
+        output = np.zeros((1, 84, 1), dtype=np.float32)
+        output[0, :4, 0] = (320, 320, 240, 240)
+        output[0, 4, 0] = 0.49
+
+        detections = decode_yolo_outputs(
+            [output], (640, 640), (640, 640), 1.0, 0, 0
+        )
+
+        self.assertEqual(detections, [])
+
+    def test_letterbox_uses_yolov8_gray_padding_and_centering(self):
+        image = np.full((320, 640, 3), 32, dtype=np.uint8)
+        padded, scale, pad_left, pad_top = letterbox(image, 640, 640)
+
+        self.assertEqual(padded.shape, (640, 640, 3))
+        self.assertEqual(scale, 1.0)
+        self.assertEqual((pad_left, pad_top), (0, 160))
+        self.assertTrue(np.all(padded[:160] == 114))
+        self.assertTrue(np.all(padded[160:480] == 32))
+
     def test_post_nms_normalized_output_decodes_person(self):
         output = np.array([[[0.25, 0.25, 0.75, 0.75, 0.9, 0]]], dtype=np.float32)
         detections = decode_yolo_outputs(
@@ -219,29 +240,58 @@ class DetectionPipelineTests(unittest.TestCase):
         output.stop()
         self.assertEqual(engine.messages, ["person ahead"])
 
-    def test_mock_scene_descriptions_rotate(self):
-        describer = MockSceneDescriber()
-        image = np.zeros((8, 8, 3), dtype=np.uint8)
-        first = describer.describe(image, [])
-        second = describer.describe(image, [])
-        self.assertTrue(first.startswith("Mock scene description:"))
-        self.assertNotEqual(first, second)
-
-    def test_space_key_calls_scene_provider_and_queues_speech(self):
+    def test_space_key_queues_real_moondream_frame_for_caption(self):
         messages = queue.Queue()
-        describer = mock.Mock()
-        describer.describe.return_value = "Mock scene description: a doorway is ahead."
+        describer = mock.Mock(spec=MoondreamSceneDescriber)
+        describer.describe.return_value = "Moondream scene description: a book is visible."
+        scene_worker = SceneDescriptionWorker(messages, describer=describer)
         feature_actions = mock.Mock()
         last_action_at = {}
         image = np.zeros((32, 32, 3), dtype=np.uint8)
-
-        should_quit = handle_preview_key(
-            ord(" "), image, [], describer, feature_actions, messages, last_action_at
-        )
+        scene_worker.start()
+        try:
+            should_quit = handle_preview_key(
+                ord(" "), image, [], scene_worker, feature_actions, messages, last_action_at
+            )
+            scene_worker._requests.join()
+        finally:
+            scene_worker.stop()
 
         self.assertFalse(should_quit)
-        describer.describe.assert_called_once_with(image, [])
-        self.assertEqual(messages.get_nowait(), "Mock scene description: a doorway is ahead.")
+        describer.describe.assert_called_once()
+        self.assertIsNot(describer.describe.call_args.args[0], image)
+        self.assertIn("Moondream scene description", messages.get_nowait())
+
+    def test_question_is_forwarded_to_moondream_and_thinking_notice_is_delayed(self):
+        messages = queue.Queue()
+        describer = mock.Mock(spec=MoondreamSceneDescriber)
+        started = threading.Event()
+        finish = threading.Event()
+
+        def slow_answer(image, question):
+            started.set()
+            finish.wait(1.0)
+            return "Moondream answer: the book cover is blue."
+
+        describer.describe.side_effect = slow_answer
+        worker = SceneDescriptionWorker(messages, question="What color is the book?", describer=describer)
+        worker.start()
+        try:
+            self.assertTrue(worker.submit(np.zeros((32, 32, 3), dtype=np.uint8)))
+            self.assertTrue(started.wait(1.0))
+            with mock.patch("netra.vlm.time.monotonic", return_value=worker._busy_since + 2.0):
+                self.assertTrue(worker.announce_thinking_if_slow())
+                self.assertFalse(worker.announce_thinking_if_slow())
+            self.assertIn("Thinking.", messages.get_nowait())
+            finish.set()
+            worker._requests.join()
+        finally:
+            finish.set()
+            worker.stop()
+
+        describer.describe.assert_called_once()
+        self.assertEqual(describer.describe.call_args.args[1], "What color is the book?")
+        self.assertIn("Moondream answer", messages.get_nowait())
 
     def test_r_key_submits_read_request_independently(self):
         feature_actions = mock.Mock()

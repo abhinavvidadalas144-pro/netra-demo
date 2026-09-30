@@ -4,8 +4,11 @@ src/netra/__init__.py
 src/netra/__main__.py
 src/netra/app.py
 src/netra/camera.py
+src/netra/currency.py
 src/netra/detection.py
+src/netra/feature_actions.py
 src/netra/speech_to_text.py
+src/netra/text_reading.py
 src/netra/text_to_speech.py
 src/netra/vlm.py
 src/netra.egg-info/PKG-INFO

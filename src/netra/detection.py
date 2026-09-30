@@ -99,7 +99,7 @@ def decode_yolo_outputs(
 	scale: float,
 	pad_left: int,
 	pad_top: int,
-	confidence_threshold: float = 0.35,
+	confidence_threshold: float = 0.50,
 	nms_threshold: float = 0.45,
 ) -> list[Detection]:
 	"""Decode YOLOv8 raw predictions or Nx6 post-NMS output into frame boxes."""
@@ -225,7 +225,7 @@ class ObjectDetector:
 		project_root = Path(__file__).resolve().parents[2]
 		configured_path = model_path or os.getenv("NETRA_DETECTOR_MODEL")
 		self.model_path = Path(configured_path) if configured_path else (
-			project_root / "models" / "yolov8n.onnx"
+			project_root / "models" / "yolov8s.onnx"
 		)
 		self.compute_unit = (compute_unit or os.getenv("NETRA_COMPUTE_UNIT", "auto")).lower()
 		if self.compute_unit not in {"auto", "npu", "cpu"}:

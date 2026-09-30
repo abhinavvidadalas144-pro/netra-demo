@@ -29,22 +29,26 @@ try {
 
         & $Python -m pip install --upgrade pip
         if ($LASTEXITCODE -ne 0) { throw "Could not upgrade pip." }
-        & $Python -m pip install -e ".[demo]"
+        & $Python -m pip install -e ".[demo,vlm]"
         if ($LASTEXITCODE -ne 0) { throw "CPU demo dependency installation failed." }
         & $Python -m pip install "numpy>=1.24,<2.0" "onnx>=1.12,<2.0" "onnxslim>=0.1.82"
         if ($LASTEXITCODE -ne 0) { throw "ONNX export helper installation failed." }
 
+        & $Python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='vikhyatk/moondream2', revision='2025-06-21')"
+        if ($LASTEXITCODE -ne 0) { throw "Could not download the pinned Moondream2 model snapshot." }
+
         $YoloCli = Join-Path $ProjectRoot ".venv\Scripts\yolo.exe"
         Push-Location (Join-Path $ProjectRoot "models")
         try {
-            & $YoloCli export model=yolov8n.pt format=onnx nms=False
-            if ($LASTEXITCODE -ne 0) { throw "Ultralytics YOLOv8n ONNX export failed." }
+            & $YoloCli export model=yolov8s.pt format=onnx nms=False
+            if ($LASTEXITCODE -ne 0) { throw "Ultralytics YOLOv8s ONNX export failed." }
         }
         finally {
             Pop-Location
         }
 
-        Write-Host "CPU demo model ready at $(Join-Path $ProjectRoot 'models\yolov8n.onnx')"
+        Write-Host "CPU detector ready at $(Join-Path $ProjectRoot 'models\yolov8s.onnx')"
+        Write-Host "Moondream2 cached at revision 2025-06-21 for offline inference."
         Write-Host 'Set $env:NETRA_DETECTOR_MODEL to that path before starting Netra.'
         return
     }

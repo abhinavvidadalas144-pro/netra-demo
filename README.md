@@ -1,13 +1,13 @@
 # Netra
 
-Netra is a CPU-based concept prototype for a hackathon demo. It runs YOLOv8n object detection locally on a webcam, reads printed text using local Tesseract OCR when R is pressed, and speaks detector alerts via Windows voices. Space speaks a rotating canned scene description. C speaks an explicit placeholder response: currency denomination recognition is not implemented yet.
+Netra is a CPU-based concept prototype for a hackathon demo. It runs YOLOv8s object detection locally on a webcam, reads printed text using local Tesseract OCR when R is pressed, and uses real Moondream2 CPU inference to caption or answer a visual question about the current camera frame on Space. C speaks an explicit placeholder response: currency denomination recognition is not implemented yet. Moondream2 is a small CPU stand-in for the planned Qwen3-VL/GenieX Snapdragon deployment.
 
 ## Prerequisites
 
 - Windows 10/11 and 64-bit Python 3.10-3.13.
 - A webcam, speakers/headphones, and a focused OpenCV preview window for the Space hotkey.
 - Tesseract OCR executable installed on Windows for the R read-text hotkey.
-- Internet during setup only, to install Python packages and download/export YOLOv8n. The running demo does not make model/API calls.
+- Internet during setup only, to install Python packages, download YOLOv8s weights, and cache Moondream2. The running demo loads local model files and does not make model/API calls.
 
 The CPU demo does not require an AI Hub account or token. The separate future Snapdragon deployment plan and its architecture split are described under [Production Deployment Plan](#production-deployment-plan).
 
@@ -19,13 +19,15 @@ Open PowerShell in this directory and run:
 .\scripts\setup.ps1 -SetupCpuDemo
 ```
 
-The script creates/reuses `.venv`, installs Netra plus Ultralytics and its ONNX export helpers, downloads `yolov8n.pt`, and runs:
+The script creates/reuses `.venv`, installs Netra plus Ultralytics, Transformers and ONNX export helpers, caches the pinned Moondream2 model in the user Hugging Face cache, downloads `yolov8s.pt`, and runs:
 
 ```powershell
-yolo export model=yolov8n.pt format=onnx nms=False
+yolo export model=yolov8s.pt format=onnx nms=False
 ```
 
-Export runs from `models/`, producing `models/yolov8n.onnx`. `nms=False` preserves the raw YOLO output expected by Netra's decoder. The ONNX export has input `[1, 3, 640, 640]` and output `[1, 84, 8400]`: 4 center-`xywh` box values plus 80 COCO class scores for each candidate. Netra selects the highest class score, applies the confidence threshold, then performs class-agnostic IoU non-maximum suppression.
+Export runs from `models/`, producing `models/yolov8s.onnx`. `nms=False` preserves the raw YOLO output expected by Netra's decoder. YOLOv8s has input `[1, 3, 640, 640]` and output `[1, 84, 8400]`: 4 center-`xywh` box values plus 80 COCO class scores for each candidate. Netra selects the highest class score, applies the confidence threshold, then performs class-agnostic IoU non-maximum suppression.
+
+Moondream2 uses the pinned Hugging Face revision `vikhyatk/moondream2@2025-06-21`. Setup caches its model files outside the repository; the download is several GB and requires free disk space. Runtime loading is local-only and inference runs on CPU. Netra does not use the hosted Moondream API or an API key.
 
 Install the Tesseract executable separately (the Python package cannot install it). On Windows, install the UB Mannheim build from [Tesseract OCR releases](https://github.com/UB-Mannheim/tesseract/wiki), enable adding Tesseract to PATH, then open a new PowerShell window and verify `tesseract --version`. If it is not on PATH, set its full executable path, for example:
 
@@ -35,23 +37,23 @@ $env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 ## Model Assets
 
-The CPU demo downloads the standard Ultralytics YOLOv8n weights and writes an ONNX model locally. These generated model files are excluded from source control. To export again after setup:
+The CPU demo downloads the standard Ultralytics YOLOv8s weights and writes an ONNX model locally. To export again after setup:
 
 ```powershell
-\.venv\Scripts\yolo.exe export model=models\yolov8n.pt format=onnx nms=False
+\.venv\Scripts\yolo.exe export model=models\yolov8s.pt format=onnx nms=False
 ```
 
 Or use the upstream command from the `models` directory:
 
 ```powershell
 cd models
-yolo export model=yolov8n.pt format=onnx nms=False
+yolo export model=yolov8s.pt format=onnx nms=False
 cd ..
 ```
 
 ## Production Deployment Plan
 
-The following is a future Snapdragon deployment plan, not what this CPU demo currently runs. Qualcomm's current documented formats differ by model; do not label all of them INT8:
+The following is a future Snapdragon deployment plan, not what this CPU demo currently runs. The current demo uses YOLOv8s and real Moondream2 on CPU. Qualcomm's documented formats differ by model; do not label all of them INT8:
 
 - YOLOv8: `w8a8` (8-bit weights and activations), exported with `qai_hub_models` for a supported QNN/ONNX runtime path.
 - Whisper Tiny: documented `float` QNN context-binary artifact; no INT8 artifact is assumed here.
@@ -71,7 +73,7 @@ src/netra/
   currency.py         Explicit non-identifying demo placeholder
   speech_to_text.py   Local voice command recognition
   text_to_speech.py   Speech output
-  vlm.py              On-demand scene description
+  vlm.py              Local Moondream2 captioning and visual questions
 scripts/
   setup.ps1           Python setup, token configuration, model export/download
 models/               Local model assets (not committed)
@@ -82,14 +84,22 @@ models/               Local model assets (not committed)
 After `-SetupCpuDemo` finishes, run these commands in the same PowerShell window:
 
 ```powershell
-$env:NETRA_DETECTOR_MODEL = (Resolve-Path .\models\yolov8n.onnx).Path
+$env:NETRA_DETECTOR_MODEL = (Resolve-Path .\models\yolov8s.onnx).Path
 $env:NETRA_COMPUTE_UNIT = "cpu"
 .\.venv\Scripts\python.exe -m netra --debug --compute-unit cpu --fps 3
 ```
 
-Click the **Netra camera / detections** window once before using hotkeys; OpenCV keyboard input goes to the focused preview window, not the PowerShell terminal. The console prints `KEY DETECTED: ...` and a dispatch log when a key is received. Space logs that the mock describer ran and that its result was queued; the speech worker prints `SPEAK: ...` and logs when it hands the message to pyttsx3/SAPI. TTS initialization or playback failures are logged instead of swallowed. Repeated key events are debounced for 0.6 seconds.
+To ask a specific question each time Space is pressed, add `--question`:
 
-The debug preview shows all controls: **Space** scene description (mock), **R** read current frame text (real local OCR), **C** currency recognition (placeholder), **Q/Escape** quit. OCR and currency requests process on a background worker; their responses are spoken through the existing speech queue. R speaks recognized text or `no text detected`. If Tesseract is missing, it logs installation guidance and speaks that text reading is unavailable. C explicitly says it cannot identify a note or denomination; it does not guess. Detector alerts continue during OCR processing. Camera framing, lighting, inference speed, and OCR text size affect results; box area is only a visual-size heuristic, not a distance estimate.
+```powershell
+.\.venv\Scripts\python.exe -m netra --debug --compute-unit cpu --fps 3 --question "What is written on the book cover?"
+```
+
+Alternatively set `NETRA_VLM_QUESTION` before launching. Without a question, Space requests a normal-length caption of the current frame.
+
+Click the **Netra camera / detections** window once before using hotkeys; OpenCV keyboard input goes to the focused preview window, not the PowerShell terminal. The console prints `KEY DETECTED: ...` and a dispatch log when a key is received. Space queues real Moondream2 image inference; the worker logs when inference starts and when a result is ready for TTS. If it takes longer than 1.5 seconds, Netra queues a spoken “Thinking” status while detector and preview continue. The speech worker prints `SPEAK: ...` and logs when it hands each message to pyttsx3/SAPI. TTS initialization or playback failures are logged instead of swallowed. Repeated key events are debounced for 0.6 seconds.
+
+The debug preview shows all controls: **Space** real Moondream2 caption/question, **R** read current frame text (real local OCR), **C** currency recognition (placeholder), **Q/Escape** quit. VLM, OCR and currency requests process on background workers; their responses are spoken through the existing speech queue. R speaks recognized text or `no text detected`. If Tesseract is missing, it logs installation guidance and speaks that text reading is unavailable. C explicitly says it cannot identify a note or denomination; it does not guess. Detector alerts continue during VLM/OCR processing. Camera framing, lighting, inference speed, and OCR text size affect results; box area is only a visual-size heuristic, not a distance estimate.
 
 The default detection confidence threshold is `0.50` (up from `0.35`), and a class-agnostic greedy IoU non-maximum suppression pass with default threshold `0.45` removes overlapping boxes even when the model assigned competing labels. This reduces duplicate/artwork-related boxes but cannot correct a confident semantic misclassification. Adjust the confidence threshold for a quick test if objects are missed:
 
@@ -99,15 +109,15 @@ $env:NETRA_CONFIDENCE_THRESHOLD = "0.20"
 
 The CPU app uses local ONNX Runtime and does not require a microphone, AI Hub token, or NPU provider.
 
-Other configuration variables: `NETRA_CAMERA_FPS` (default `3`), `NETRA_CONFIDENCE_THRESHOLD` (default `0.50`), `NETRA_NMS_IOU_THRESHOLD` (default `0.45`), `NETRA_PROXIMITY_THRESHOLD` (default `0.12` of frame area), and `NETRA_ALERT_COOLDOWN_S` (default `3`). Box area is only a rough visual-size heuristic, not a physical distance estimate.
+Other configuration variables: `NETRA_CAMERA_FPS` (default `3`), `NETRA_CONFIDENCE_THRESHOLD` (default `0.50`), `NETRA_NMS_IOU_THRESHOLD` (default `0.45`), `NETRA_PROXIMITY_THRESHOLD` (default `0.12` of frame area), `NETRA_ALERT_COOLDOWN_S` (default `3`), and optional `NETRA_VLM_QUESTION`. Box area is only a rough visual-size heuristic, not a physical distance estimate.
 
 ## Limitations and Safety
 
-- This is a CPU-based concept prototype for demo purposes, not a production accessibility or navigation aid. The VLM is mocked with canned rotating sentences and does not analyze the camera frame. Currency recognition is also a placeholder and cannot identify Indian note denominations. OCR uses real local Tesseract OCR, but can misread text.
+- This is a CPU-based concept prototype for demo purposes, not a production accessibility or navigation aid. Moondream2 performs real local captioning and visual question answering on the camera frame, but is a small CPU stand-in for production Qwen3-VL/GenieX. Currency recognition is a placeholder and cannot identify Indian note denominations. OCR uses real local Tesseract OCR, but can misread text.
 - Initial setup/model download needs internet access. After the YOLO ONNX file is present, runtime inference and Windows SAPI speech are local and do not call cloud APIs.
 - The production Snapdragon plan is separate: YOLOv8 `w8a8`, Whisper Tiny `float` QNN, and Qwen3-VL `q4_0` GGUF via GenieX; x64 Python/qai_hub_models for export and native ARM64 runtime for inference. See [Production Deployment Plan](#production-deployment-plan).
 - Detection boxes alone do not establish distance, drop-offs, or collision risk. The prototype is not a mobility aid or a substitute for a cane, guide dog, or human assistance; never rely on it for safety-critical navigation.
-- Detection misses and false positives are expected. Descriptions are examples only and must not be treated as observations of the current scene.
+- Detection misses, false positives, and VLM mistakes are expected; verify important information independently.
 - Production currency recognition needs a labeled Indian banknote dataset and a fine-tuned local vision classifier/detector, with orientation, wear, lighting, and counterfeit limitations evaluated before use.
 - YOLOv8 is distributed under AGPL-3.0; review its license for your intended submission. Review Qwen's usage terms before production deployment.
 - Camera access must be granted by Windows. No camera frames are saved by the app; model binaries are downloaded/generated locally and not committed.
